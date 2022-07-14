@@ -261,7 +261,7 @@ if __name__ == "__main__":
             print('Error u: %e' % (error_u))
             err_lst[i, j] = error_u
     
-    
+    """
     np.savetxt("weight_experimentation4.csv", results)
     np.savetxt("err_lst4.csv", err_lst)
-
+    """
