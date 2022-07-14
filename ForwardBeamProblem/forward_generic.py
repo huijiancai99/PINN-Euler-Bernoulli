@@ -28,11 +28,12 @@ class PhysicsInformedNN():
         
         self.x_f = X_f
         self.loads = loads
+
+        self.EI = EI
+
         self.unpack_bc(bc)
         
         self.layers = layers
-        
-        self.EI = EI
         
         self.weights, self.biases = self.initialize_NN(layers)
         
@@ -63,14 +64,9 @@ class PhysicsInformedNN():
                              if self.u_x_index else 0
         loss_components[3] = loss_weights[3] * tf.reduce_mean(tf.square(self.u_xx_tf - self.u_xx_pred)) \
                              if self.u_xx_index else 0
-        loss_components[4] = loss_weights[4] * tf.reduce_mean(tf.square(self.u_xxx_tf - self.u_xxx_pred)) \
+        loss_components[4] = loss_weights[4] * tf.reduce_mean(tf.square(self.u_xxx_tf + self.u_xxx_pred)) \
                              if self.u_xxx_index else 0
         self.loss = sum(loss_components)
-                    #loss_weights[0] * tf.reduce_mean(tf.square(self.u_tf - self.u_pred)) + 
-                    #loss_weights[1] * tf.reduce_mean(tf.square(self.f_pred)) + 
-                    #loss_weights[3] * tf.reduce_mean(tf.square(self.u_xx_tf - self.u_xx_pred)) + 
-                    #loss_weights[4] * tf.reduce_mean(tf.square(self.u_xxx_tf - self.u_xxx_pred))
-                    #tf.reduce_mean(tf.square(self.u_tf - self.u_pred)) + 
              
         # try combining Adam, should be put before L-BFGS-B
         self.optimizer = tf.contrib.opt.ScipyOptimizerInterface(self.loss,
@@ -86,6 +82,7 @@ class PhysicsInformedNN():
     
         
     def unpack_bc(self, bc):
+        # unpacks the boundary conditions according to the order of derivatives
         u, u_x, u_xx, u_xxx = [], [], [], []
         self.u_index, self.u_x_index, self.u_xx_index, self.u_xxx_index = [], [], [], []
         
@@ -97,12 +94,13 @@ class PhysicsInformedNN():
                 u_x.append([bc[i, 0], bc[i, -3]])
                 self.u_x_index.append(i)
             if not np.isnan(bc[i, -2]):
-                u_xx.append([bc[i, 0], bc[i, -2]])
+                u_xx.append([bc[i, 0], bc[i, -2] / self.EI])
                 self.u_xx_index.append(i)
             if not np.isnan(bc[i, -1]):
-                u_xxx.append([bc[i, 0], bc[i, -2]])
+                u_xxx.append([bc[i, 0], bc[i, -1] / self.EI])
                 self.u_xxx_index.append(i)
-
+        
+        # keeps the shape constant to avoid errors
         self.u = np.array(u) if self.u_index else np.zeros((1, 1))
         self.u_x = np.array(u_x) if self.u_x_index else np.zeros((1, 1))
         self.u_xx = np.array(u_xx) if self.u_xx_index else np.zeros((1, 1))
@@ -110,7 +108,7 @@ class PhysicsInformedNN():
             
 
     def unpack_gradients(self):
-
+        # unpacks the gradients for use in the loss function
         if self.u_x_index:
             self.u_x_pred = tf.transpose(tf.constant([[]]))
             for i in range(len(self.u_x_index)):
@@ -166,10 +164,10 @@ class PhysicsInformedNN():
     
     def net_f(self, x):
         u = self.net_u(x)
-        u_x = tf.gradients(u, x)[0]
-        u_xx = tf.gradients(u_x, x)[0]
-        u_xxx = tf.gradients(u_xx, x)[0]
-        u_xxxx = tf.gradients(u_xxx, x)[0]
+        u_x = tf.gradients(u, x)[0][:, 0:1]
+        u_xx = tf.gradients(u_x, x)[0][:, 0:1]
+        u_xxx = tf.gradients(u_xx, x)[0][:, 0:1]
+        u_xxxx = tf.gradients(u_xxx, x)[0][:, 0:1]
         f = EI * u_xxxx + self.loads_tf
         return f, [u_x, u_xx, u_xxx]
     
@@ -198,23 +196,23 @@ class PhysicsInformedNN():
     
 if __name__ == "__main__":
     
-    EI = 270
-    L = 6.
     noise = 0.0
     
     N_u = 2
     N_f = 10000
     
-    data = scipy.io.loadmat('./sample4.mat')
+    data = scipy.io.loadmat('./sample_cantilever_cm.mat')
     # x: (256, 1) vector containing coordinates from 0:6, equally spaced
     # bc: boundary condition matrices
     # bc shape: (N_u, 5) when ConstantLoad == 1
     # (N_u, 6) when ConstantLoad == 0
     # column format: coordinate, load at coordinate, u, u_x, u_xx, u_xxx
     # 0 for fixed, non-zero vals for prescribed values, nan for free for the last for columns
+    EI = data['EI']
+    domain = data['domain']
     x = data['x']
     bc = data['BC']
-    #ConstantLoad = data['ConstantLoad'][0, 0]
+    print(bc)
 
     exact = np.real(data['usol'])
     
@@ -229,13 +227,15 @@ if __name__ == "__main__":
     X_u_train = bc[:, 0:1]
     X_f_train = lb + (ub - lb) * lhs(1, N_f)
     X_f_train = np.vstack((X_u_train, X_f_train))
-    loads = lg.triangular_load(X_f_train, 8, 1)
-    loads_star = lg.triangular_load(X_star, 8, 1)
-       
+    #loads = lg.triangular_load(X_f_train, 6, 8, 1)
+    #loads_star = lg.triangular_load(X_star, 6, 8, 1)
+    loads = lg.uniform_load(X_f_train, 0)
+    loads_star = lg.uniform_load(X_star, 0)
+   
     grid_x = 1
     grid_y = 1
 
-    loss_weights = [1, 1, 100, 100, 100]
+    loss_weights = [1, 100, 100, 100, 1e5]
     results = np.zeros((256, grid_x * grid_y))
     err_lst = np.zeros((grid_x, grid_y))
     for i in range(grid_x):
@@ -261,8 +261,7 @@ if __name__ == "__main__":
             print('Error u: %e' % (error_u))
             err_lst[i, j] = error_u
     
-    """
+    
     np.savetxt("weight_experimentation4.csv", results)
     np.savetxt("err_lst4.csv", err_lst)
-    """
 
