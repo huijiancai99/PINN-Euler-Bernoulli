@@ -18,17 +18,18 @@ tf.set_random_seed(1234)
 
 class PhysicsInformedNN():
     
-    def __init__(self, X_f, loads, bc_dict, index_dict, layers, domain, EI, loss_weights):
+    def __init__(self, X_u, X_f, label_b, label_con, loads, layers, domain, EI, loss_weights):
         
         self.domain = domain
         
+        self.x_u = X_u
         self.x_f = X_f
+        self.label_b = label_b
+        self.label_con = label_con
+        
         self.loads = loads
 
         self.EI = EI
-
-        self.bc_dict = bc_dict
-        self.index_dict = index_dict
         
         self.layers = layers
         self.bc_list = [[], [], [], [], [], [], [], [], [], [], [], []]
@@ -38,9 +39,7 @@ class PhysicsInformedNN():
         self.sess = tf.Session(config=tf.ConfigProto(allow_soft_placement=True,
                                                      log_device_placement=True))
         
-        self.x_u_tf = tf.placeholder(tf.float32, shape=[None, self.x_f.shape[1]])
-        self.x_u_l_tf = tf.placeholder(tf.float32, shape=[None, self.x_f.shape[1]])
-        self.x_u_r_tf = tf.placeholder(tf.float32, shape=[None, self.x_f.shape[1]])
+        self.x_u_tf = tf.placeholder(tf.float32, shape=[None, self.x_u[0].shape[1]])
         
         self.u_tf = tf.placeholder(tf.float32, shape=[None, 1])  
         self.u_x_tf = tf.placeholder(tf.float32, shape=[None, 1])
@@ -50,14 +49,24 @@ class PhysicsInformedNN():
         self.u_xx_con_tf = tf.placeholder(tf.float32, shape=[None, 1])
         self.u_xxx_con_tf = tf.placeholder(tf.float32, shape=[None, 1])
         
-        self.loads_tf = tf.placeholder(tf.float32, shape=[None, self.loads.shape[1]])
-
-        self.x_f_tf = tf.placeholder(tf.float32, shape=[None, self.x_f.shape[1]])
+        self.loads_tf = []
+        self.x_f_tf = []
+        for i in range(len(self.x_f)):
+            self.loads_tf.append(tf.placeholder(tf.float32, shape=[None, self.loads[0].shape[1]]))
+            self.x_f_tf.append(tf.placeholder(tf.float32, shape=[None, self.x_f[0].shape[1]]))
+       
         
         self.u_pred = self.net_u(self.x_u_tf)
-        self.u_l_pred = self.net_u(self.x_u_l_tf)
-        self.u_r_pred = self.net_u(self.x_u_r_tf)
-        self.f_pred, self.grads_pred = self.net_f(self.x_f_tf)
+
+        self.f_pred, self.grads_pred = tf.transpose(tf.constant([[]])), []
+        for i in range(len(self.x_f)):
+            f_pred, grads_pred = self.net_f(self.x_f_tf[i], self.loads_tf[i])
+            self.f_pred = tf.concat((self.f_pred, f_pred), axis=0)
+            self.grads_pred.append(grads_pred)
+        
+        self.u_b_pred = [0, 0, 0]
+        self.u_con_l_pred = [0, 0, 0, 0]
+        self.u_con_r_pred = [0, 0, 0, 0]
         
         self.unpack_gradients()
         # check shapes of the self.xxx varst
@@ -65,35 +74,35 @@ class PhysicsInformedNN():
         # adjust coefficients of the loss terms
         loss_components = [0, 0, 0, 0, 0, 0, 0, 0, 0]
         # residual
-        loss_components[0] = loss_weights[0] * tf.reduce_mean(tf.square(self.f_pred))
+        loss_components[0] = loss_weights[0] * tf.reduce_mean(tf.square(self.f_pred)) # come back last to modify
         # bc of u
         loss_components[1] = loss_weights[1] * tf.reduce_mean(tf.square(self.u_tf - self.u_pred))
         # bc of u_x
-        loss_components[2] = loss_weights[2] * tf.reduce_mean(tf.square(self.u_x_tf - self.u_x_pred)) \
-                             if self.bc_list[3] else 0
+        loss_components[2] = loss_weights[2] * tf.reduce_mean(tf.square(self.u_x_tf - self.u_b_pred[0])) \
+                             if self.x_u[1].shape[0] else 0
         # bc of u_xx
-        loss_components[3] = loss_weights[3] * tf.reduce_mean(tf.square(self.u_xx_tf - self.u_xx_pred)) \
-                             if self.bc_list[6] else 0
+        loss_components[3] = loss_weights[3] * tf.reduce_mean(tf.square(self.u_xx_tf - self.u_b_pred[1])) \
+                             if self.x_u[2].shape[0] else 0
         # bc of u_xxx
-        loss_components[4] = loss_weights[4] * tf.reduce_mean(tf.square(self.u_xxx_tf - self.u_xxx_pred)) \
-                             if self.bc_list[9] else 0
+        loss_components[4] = loss_weights[4] * tf.reduce_mean(tf.square(self.u_xxx_tf - self.u_b_pred[2])) \
+                             if self.x_u[3].shape[0] else 0
         # bc of u (continuity)
-        loss_components[5] = loss_weights[5] * tf.reduce_mean(tf.square(self.u_l_pred - self.u_r_pred)) \
-                             if self.bc_list[1] else 0
+        loss_components[5] = loss_weights[5] * tf.reduce_mean(tf.square(self.u_con_l_pred[0] - self.u_con_r_pred[0])) \
+                             if self.label_con[0].shape[0] else 0
         
         # bc of u_x (continuity)
-        loss_components[6] = loss_weights[6] * tf.reduce_mean(tf.square(self.u_x_l_pred - self.u_x_r_pred)) \
-                             if self.bc_list[4] else 0
+        loss_components[6] = loss_weights[6] * tf.reduce_mean(tf.square(self.u_con_l_pred[1] - self.u_con_r_pred[1])) \
+                             if self.label_con[1].shape[0] else 0
                              
         # bc of u_xx (continuity)
-        loss_components[7] = loss_weights[7] * tf.reduce_mean(tf.square(self.u_xx_l_pred - self.u_xx_r_pred - self.u_xx_con_tf)) \
-                             if self.bc_list[7] else 0
+        loss_components[7] = loss_weights[7] * tf.reduce_mean(tf.square(self.u_con_l_pred[2] - self.u_con_r_pred[2] - self.u_xx_con_tf)) \
+                             if self.label_con[2].shape[0] else 0
         
         # bc of u_xxx (continuity)
-        loss_components[8] = loss_weights[8] * tf.reduce_mean(tf.square(self.u_xxx_l_pred - self.u_xxx_r_pred - self.u_xxx_con_tf)) \
-                             if self.bc_list[10] else 0
+        loss_components[8] = loss_weights[8] * tf.reduce_mean(tf.square(self.u_con_l_pred[3] - self.u_con_r_pred[3] - self.u_xxx_con_tf)) \
+                             if self.label_con[3].shape[0] else 0
         
-        print(loss_components)
+        
         self.loss = sum(loss_components)
              
         # try combining Adam, should be put before L-BFGS-B
@@ -106,161 +115,31 @@ class PhysicsInformedNN():
                                                                          'ftol' : 1.0 * np.finfo(float).eps})
         init = tf.global_variables_initializer()
         self.sess.run(init)
-    
-    
-    """    
-    def unpack_bc(self, bc):
-        # unpacks the boundary conditions according to the order of derivatives
-        u, u_x, u_xx, u_xxx = [], [], [], []
-        self.u_index, self.u_x_index, self.u_xx_index, self.u_xxx_index = [], [], [], []
-        
-        for i in range(bc.shape[0]):
-            if not np.isnan(bc[i, -4]):
-                u.append([bc[i, 0], bc[i, -4]])
-                self.u_index.append(i)
-            if not np.isnan(bc[i, -3]):
-                u_x.append([bc[i, 0], bc[i, -3]])
-                self.u_x_index.append(i)
-            if not np.isnan(bc[i, -2]):
-                if bc[i, 0] == self.lb:
-                    u_xx.append([bc[i, 0], -bc[i, -2] / self.EI])
-                    self.u_xx_index.append(i)
-                if bc[i, 0] == self.ub:
-                    u_xx.append([bc[i, 0], bc[i, -2] / self.EI])
-                    self.u_xx_index.append(i)
-            if not np.isnan(bc[i, -1]):
-                if bc[i, 0] == self.lb:
-                    u_xxx.append([bc[i, 0], bc[i, -1] / self.EI])
-                    self.u_xxx_index.append(i)
-                if bc[i, 0] == self.ub:
-                    u_xxx.append([bc[i, 0], -bc[i, -1] / self.EI])
-                    self.u_xxx_index.append(i)
-        
-        # keeps the shape constant to avoid errors
-        self.u = np.array(u) if self.u_index else np.zeros((1, 1))
-        self.u_x = np.array(u_x) if self.u_x_index else np.zeros((1, 1))
-        self.u_xx = np.array(u_xx) if self.u_xx_index else np.zeros((1, 1))
-        self.u_xxx = np.array(u_xxx) if self.u_xxx_index else np.zeros((1, 1))
-        """    
 
     def unpack_gradients(self):
+        # gradients on boundary
+        for i in range(3):
+            if self.x_u[i + 1].shape[0]:
+                if self.x_u[i + 1].shape[0] == 2:
+                    u_b_pred = tf.concat((self.grads_pred[0][i + 1][0:1, :], self.grads_pred[-1][i + 1][1:2, :]), axis=0)
+                    print(i)
+                if self.x_u[i + 1][0, 0] == self.domain[0]:
+                    u_b_pred = self.grads_pred[0][i + 1][0:1, :]
+                if self.x_u[i + 1][0, 0] == self.domain[1]:
+                    u_b_pred = self.grads_pred[-1][i + 1][1:2, :]
+                self.u_b_pred[i] = u_b_pred
         
-        for key in self.bc_dict.keys():
-            bc = self.bc_dict[key]
-            for j in range(bc.shape[0] - 1):
-                self.interpret_bc(key, bc[j], j)
-        
-        self.x_u, self.u = np.zeros((0, 1)), np.zeros((0, 1))
-        for i in range(len(self.bc_list[0])):
-            key = self.x_f[self.bc_list[0][i], 0]
-            self.x_u = np.vstack((self.x_u, key))
-            self.u = np.vstack((self.u, self.bc_dict[key][0]))
-        
-        if self.bc_list[1]:
-            self.x_u_l, self.x_u_r, self.u_con = np.zeros((0, 1)), np.zeros((0, 1)), np.zeros((0, 1))
-            for i in range(len(self.bc_list[0])):
-                l_key, r_key = self.x_f[self.bc_list[1][i], 0], self.x_f[self.bc_list[2][i], 0]
-                self.x_u_l = np.vstack((self.x_u_l, l_key))
-                self.x_u_r = np.vstack((self.x_u_r, r_key))
-                self.u_con = np.vstack((self.u_con, self.bc_dict[l_key][0]))
-        
-        if self.bc_list[3]:
-            self.u_x_pred = tf.transpose(tf.constant([[]]))
-            self.u_x = np.zeros((0, 1))
-            for i in range(len(self.bc_list[3])):
-                index = self.bc_list[3][i]
-                key = self.x_f[index, 0]
-                self.u_x_pred = tf.concat((self.u_x_pred, self.grads_pred[0][index:index + 1, :]), axis=0)
-                self.u_x = np.vstack((self.u_x, self.bc_dict[key][1]))
-        
-        if self.bc_list[6]:
-            self.u_xx_pred = tf.transpose(tf.constant([[]]))
-            self.u_xx = np.zeros((0, 1))
-            for i in range(len(self.bc_list[6])):
-                index = self.bc_list[6][i]
-                key = self.x_f[index, 0]
-                self.u_xx_pred = tf.concat((self.u_xx_pred, self.grads_pred[1][index:index + 1, :]), axis=0)
-                self.u_xx = np.vstack((self.u_xx, self.bc_dict[key][2] / self.EI)) # sign adjustment
-        
-        if self.bc_list[9]:
-            self.u_xxx_pred = tf.transpose(tf.constant([[]]))
-            self.u_xxx = np.zeros((0, 1))
-            for i in range(len(self.bc_list[9])):
-                index = self.bc_list[9][i]
-                key = self.x_f[index, 0]
-                self.u_xxx_pred = tf.concat((self.u_xxx_pred, self.grads_pred[2][index:index + 1, :]), axis=0)
-                self.u_xxx = np.vstack((self.u_xxx, -self.bc_dict[key][3] / self.EI)) # sign adjustment
-                
-        if self.bc_list[4]:
-            self.u_x_l_pred = tf.transpose(tf.constant([[]]))
-            self.u_x_r_pred = tf.transpose(tf.constant([[]]))
-            self.u_x_con = np.zeros((0, 1))
-            for i in range(len(self.bc_list[4])):
-                l_index, r_index = self.bc_list[4][i], self.bc_list[5][i]
-                l_key = self.x_f[l_index, 0]
-                self.u_x_l_pred = tf.concat((self.u_x_l_pred, self.grads_pred[0][l_index:l_index + 1, :]), axis=0)
-                self.u_x_r_pred = tf.concat((self.u_x_r_pred, self.grads_pred[0][r_index:r_index + 1, :]), axis=0)
-                self.u_x_con = np.vstack((self.u_x_con, self.bc_dict[l_key][1])) # sign adjustment
-                
-        if self.bc_list[7]:
-            self.u_xx_l_pred = tf.transpose(tf.constant([[]]))
-            self.u_xx_r_pred = tf.transpose(tf.constant([[]]))
-            self.u_xx_con = np.zeros((0, 1))
-            for i in range(len(self.bc_list[7])):
-                l_index, r_index = self.bc_list[7][i], self.bc_list[8][i]
-                l_key = self.x_f[l_index, 0]
-                self.u_xx_l_pred = tf.concat((self.u_xx_l_pred, self.grads_pred[1][l_index:l_index + 1, :]), axis=0)
-                self.u_xx_r_pred = tf.concat((self.u_xx_r_pred, self.grads_pred[1][r_index:r_index + 1, :]), axis=0)
-                self.u_xx_con = np.vstack((self.u_xx_con, self.bc_dict[l_key][2] / self.EI)) # sign adjustment
-        
-        if self.bc_list[10]:
-            self.u_xxx_l_pred = tf.transpose(tf.constant([[]]))
-            self.u_xxx_r_pred = tf.transpose(tf.constant([[]]))
-            self.u_xxx_con = np.zeros((0, 1))
-            for i in range(len(self.bc_list[10])):
-                l_index, r_index = self.bc_list[10][i], self.bc_list[11][i]
-                l_key = self.x_f[l_index, 0]
-                self.u_xxx_l_pred = tf.concat((self.u_xxx_l_pred, self.grads_pred[2][l_index:l_index + 1, :]), axis=0)
-                self.u_xxx_r_pred = tf.concat((self.u_xxx_r_pred, self.grads_pred[2][r_index:r_index + 1, :]), axis=0)
-                self.u_xxx_con = np.vstack((self.u_xxx_con, self.bc_dict[l_key][3] / self.EI))
-                
-        
-        """
-        # unpacks the gradients for use in the loss function
-        if self.u_x_index:
-            self.u_x_pred = tf.transpose(tf.constant([[]]))
-            for i in range(len(self.u_x_index)):
-                index = self.u_x_index[i]
-                self.u_x_pred = tf.concat((self.u_x_pred, self.grads_pred[0][index:index + 1, :]), axis=0)
-
-        if self.u_xx_index:
-            self.u_xx_pred = tf.transpose(tf.constant([[]]))
-            for i in range(len(self.u_xx_index)):
-                index = self.u_xx_index[i]
-                self.u_xx_pred = tf.concat((self.u_xx_pred, self.grads_pred[1][index:index + 1, :]), axis=0)
-
-        if self.u_xxx_index:
-            self.u_xxx_pred = tf.transpose(tf.constant([[]]))
-            for i in range(len(self.u_xxx_index)):
-                index = self.u_xxx_index[i]
-                self.u_xxx_pred = tf.concat((self.u_xxx_pred, self.grads_pred[2][index:index + 1, :]), axis=0)
-        """
-    
-    
-    def interpret_bc(self, key, bc_val, index):
-        # 3 * index: boundary points
-        # 3 * index + 1: left
-        # 3 * index + 2: right
-        
-        if not np.isnan(bc_val):
-            # flag to avoid duplication
-            if self.bc_dict[key][-1] == 0:
-                self.bc_list[3 * index].append(self.index_dict[key])
-            if self.bc_dict[key][-1] == -1:
-                self.bc_list[3 * index + 1].append(self.index_dict[key])
-            if self.bc_dict[key][-1] == 1:
-                self.bc_list[3 * index + 2].append(self.index_dict[key])
-        
+        # gradients for continuity
+        num_segments = len(self.x_f)
+        for i in range(4):
+            u_con_l_pred = tf.transpose(tf.constant([[]]))
+            u_con_r_pred = tf.transpose(tf.constant([[]]))
+            for j in range(num_segments - 1):
+                u_con_l_pred = tf.concat((u_con_l_pred, self.grads_pred[j][i][1:2, 0:1]), axis=0)
+                u_con_r_pred = tf.concat((u_con_r_pred, self.grads_pred[j + 1][i][0:1, 0:1]), axis=0)
+            
+            self.u_con_l_pred[i] = u_con_l_pred
+            self.u_con_r_pred[i] = u_con_r_pred
     
     def initialize_NN(self, layers):
         weights = []
@@ -296,44 +175,51 @@ class PhysicsInformedNN():
         u = self.neural_net(x, self.weights, self.biases)
         return u
     
-    def net_f(self, x):
+    def net_f(self, x, loads):
         u = self.net_u(x)
         u_x = tf.gradients(u, x)[0][:, 0:1]
         u_xx = tf.gradients(u_x, x)[0][:, 0:1]
         u_xxx = tf.gradients(u_xx, x)[0][:, 0:1]
         u_xxxx = tf.gradients(u_xxx, x)[0][:, 0:1]
-        f = self.EI * u_xxxx + self.loads_tf
-        return f, [u_x, u_xx, u_xxx]
+        f = self.EI * u_xxxx + loads
+        return f, [u, u_x, u_xx, u_xxx]
     
     def callback(self, loss):
         print('Loss: ', loss)
     
     def train(self):
-         
-        tf_dict = {self.x_f_tf: self.x_f,
-                   self.x_u_tf: self.x_u,
-                   self.x_u_l_tf: self.x_u_l if self.bc_list[1] else np.zeros((1, 1)),
-                   self.x_u_r_tf: self.x_u_r if self.bc_list[2] else np.zeros((1, 1)),
-                   self.u_tf: self.u,
-                   self.u_x_tf: self.u_x if self.bc_list[3] else np.zeros((1, 1)),
-                   self.u_xx_tf: self.u_xx if self.bc_list[6] else np.zeros((1, 1)),
-                   self.u_xxx_tf: self.u_xxx if self.bc_list[9] else np.zeros((1, 1)),
-                   self.u_xx_con_tf: self.u_xx_con if self.bc_list[7] else np.zeros((1, 1)),
-                   self.u_xxx_con_tf: self.u_xxx_con if self.bc_list[10] else np.zeros((1, 1)),
-                   self.loads_tf: self.loads}
+        
+        tf_dict = {self.x_u_tf: self.x_u[0],
+                   self.u_tf: self.label_b[0],
+                   self.u_x_tf: self.label_b[1] if self.label_b[1].shape[0] else np.zeros((1, 1)),
+                   self.u_xx_tf: self.label_b[2] if self.label_b[2].shape[0] else np.zeros((1, 1)),
+                   self.u_xxx_tf: self.label_b[3] if self.label_b[3].shape[0] else np.zeros((1, 1)),
+                   self.u_xx_con_tf: self.label_con[2] if self.label_con[0].shape[0] else np.zeros((1, 1)),
+                   self.u_xxx_con_tf: self.label_con[3] if self.label_con[1].shape[0] else np.zeros((1, 1))}
+        
+        for i in range(len(self.x_f)):
+            tf_dict[self.x_f_tf[i]] = self.x_f[i]
+            tf_dict[self.loads_tf[i]] = self.loads[i]
         
         self.optimizer.minimize(self.sess,
                                 feed_dict=tf_dict,
                                 fetches=[self.loss],
                                 loss_callback=self.callback)
     
-    def predict(self, X_star, loads):
+    def predict(self, X_star, loads, X_star_con):
+        feed_dict = {}
+        for i in range(len(self.x_f)):
+            feed_dict[self.x_f_tf[i]] = X_star[i]
+            feed_dict[self.loads_tf[i]] = loads[i]
         
-        u_star = self.sess.run(self.u_pred, {self.x_u_tf: X_star[:,0:1]})  
-        f_star = self.sess.run(self.f_pred, {self.x_f_tf: X_star[:,0:1], self.loads_tf: loads})
-        #phi_star = self.sess.run(self.phi_pred, {self.x_f_tf: X_star[:, 0:1]})
+        u_star = self.sess.run(self.u_pred, {self.x_u_tf: X_star_con})  
+        f_star = self.sess.run(self.f_pred, feed_dict)
+        
+        pred1 = self.sess.run(self.grads_pred[0][3], {self.x_f_tf[0]: X_star[0][:, 0:1]})
+        pred2 = self.sess.run(self.grads_pred[1][3], {self.x_f_tf[1]: X_star[1][:, 0:1]})
+        u_xxx_star = np.vstack((pred1, pred2))
                
-        return u_star, f_star #, phi_star
+        return u_star, f_star, u_xxx_star
     
 if __name__ == "__main__":
     

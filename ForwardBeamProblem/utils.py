@@ -23,103 +23,68 @@ def unpack_bc(bc, domain, EI, N_f):
             left_coord.append(bc[i, 0] - offset)
             right_coord.append(bc[i, 0] + offset)
     
-    accurate_domain.append([domain[0], min(left_coord)])
-    left_coord.remove(min(left_coord))
+    if left_coord:
+        accurate_domain.append([domain[0], min(left_coord)])
+        left_coord.remove(min(left_coord))
     
-    while left_coord:
-        left, right = min(left_coord), min(right_coord)
-        accurate_domain.append([left, right])
-        left_coord.remove(left)
-        right_coord.remove(right)
+        while left_coord:
+            left, right = min(left_coord), min(right_coord)
+            accurate_domain.append([left, right])
+            left_coord.remove(left)
+            right_coord.remove(right)
         
-    accurate_domain.append([right_coord[0], domain[1]])
+        accurate_domain.append([right_coord[0], domain[1]])
+        
+    else:
+        accurate_domain.append([domain[0], domain[1]])
     
     return bc_dict, index_dict, accurate_domain
-    
-    
-    
-    
-    
-    """
-    # unpacks the boundary conditions according to the order of derivatives
-    u, u_x, u_xx, u_xx_in, u_xxx, u_xxx_in = [], [], [], [], [], []
-    u_index, u_x_index, u_xx_index, u_xx_in_index, u_xxx_index, u_xxx_in_index = [], [], [], [], [], []
 
-    for i in range(bc.shape[0]):
-        if not np.isnan(bc[i, -4]):
-            u.append([bc[i, 0], bc[i, -4]])
-            u_index.append(i)
-        
-        if not np.isnan(bc[i, -3]):
-            u_x.append([bc[i, 0], bc[i, -3]])
-            u_x_index.append(i)
-        
-        if not np.isnan(bc[i, -2]):
-            if bc[i, 0] == domain[0]:
-                u_xx.append([bc[i, 0], -bc[i, -2] / EI])
-                u_xx_index.append(i)
-            elif bc[i, 0] == domain[1]:
-                u_xx.append([bc[i, 0], bc[i, -2] / EI])
-                u_xx_index.append(i)
-            else:
-                u_xx_in.append([bc[i, 0], bc[i, -2] / EI])
-                u_xx_in_index.append(i)
-        
-        if not np.isnan(bc[i, -1]):
-            if bc[i, 0] == domain[0]:
-                u_xxx.append([bc[i, 0], bc[i, -1] / EI])
-                u_xxx_index.append(i)
-            elif bc[i, 0] == domain[1]:
-                u_xxx.append([bc[i, 0], -bc[i, -1] / EI])
-                u_xxx_index.append(i)
-            else:
-                u_xxx_in.append([bc[i, 0], bc[i, -1] / EI])
-                u_xxx_in_index.append(i)
-
-    # keeps the shape constant to avoid errors
-    u = np.array(u) if u_index else np.zeros((1, 1))
-    u_x = np.array(u_x) if u_x_index else np.zeros((1, 1))
-    u_xx = np.array(u_xx) if u_xx_index else np.zeros((1, 1))
-    u_xxx = np.array(u_xxx) if u_xxx_index else np.zeros((1, 1))
-    u_xx_in = np.array(u_xx_in) if u_xx_in_index else np.zeros((1, 1))
-    u_xxx_in = np.array(u_xxx_in) if u_xxx_in_index else np.zeros((1, 1))
-    return [u, u_x, u_xx, u_xxx, u_xx_in, u_xxx_in], \
-           [u_index, u_x_index, u_xx_index, u_xxx_index, u_xx_in_index, u_xxx_in_index]
-    """
-
-def assemble_boundary_set(bc_dict):
-    key_lst = list(bc_dict.keys())
-    length = len(key_lst)
-    return np.reshape(np.array(key_lst), (length, 1))
-    """
-    X_u_train = bc_sets[0][:, 0:1]
-    if bc_sets[1].shape[1] == 2:
-        X_u_train = np.vstack((X_u_train, bc_sets[1][:, 0:1]))
-    if bc_sets[2].shape[1] == 2:
-        X_u_train = np.vstack((X_u_train, bc_sets[2][:, 0:1]))
-    if bc_sets[3].shape[1] == 2:
-        X_u_train = np.vstack((X_u_train, bc_sets[3][:, 0:1]))
-    if bc_sets[4].shape[1] == 2:
-        X_u_train = np.vstack((X_u_train, bc_sets[4][:, 0:1]))
-    if bc_sets[5].shape[1] == 2:
-        X_u_train = np.vstack((X_u_train, bc_sets[5][:, 0:1]))
-    return X_u_train
-    """
+def assemble_boundary_set(bc_dict, raw_domain, EI):
+    # find boundary points with non-nan values
+    X_u_train = [[], [], [], []]
+    label_train = [[], [], [], []]
+    for i in range(4):
+        coords = [coord for coord in raw_domain if not np.isnan(bc_dict[coord][i])]
+        labels = [bc_dict[coord][i] for coord in raw_domain if not np.isnan(bc_dict[coord][i])]
+        length = len(coords)
+        coords_arr = np.reshape(np.array(coords, dtype='float32'), (length, 1))
+        labels_arr = np.reshape(np.array(labels, dtype='float32'), (length, 1))
+        X_u_train[i] = coords_arr
+        label_train[i] = labels_arr
+    label_train[2] /= EI
+    label_train[3] /= EI
+    return X_u_train, label_train
 
 def assemble_training_set(X_u_train, accurate_domain, N_f):
+    # TODO: divide by EI
     domain_length = [sub_domain[1] - sub_domain[0] for sub_domain in accurate_domain]
     points_per_domain = [floor(length / sum(domain_length) * N_f) for length in domain_length]
-    print(points_per_domain)
     points_per_domain[-1] = N_f - sum(points_per_domain[0:-1])
-    X_f_train = np.zeros((0, 1))
+    X_f_train = []
     for i in range(len(accurate_domain)):
         sub_domain = accurate_domain[i]
+        X_u_sub = np.array([[sub_domain[0]], [sub_domain[1]]])
         colloc_points = sub_domain[0] + (sub_domain[1] - sub_domain[0]) * lhs(1, points_per_domain[i])
-        X_f_train = np.vstack((X_f_train, colloc_points))
-    return np.vstack((X_u_train, X_f_train))
+        X_f_train.append(np.vstack((X_u_sub, colloc_points)))
+    return X_f_train
+
+def assemble_continuity_set(bc_dict, raw_domain, EI):
+    label_con = [[], [], [], []]
+    for i in range(4):
+        labels = [bc_dict[coord][i] for coord in bc_dict.keys() if bc_dict[coord][4] == 1 and not np.isnan(bc_dict[coord][i])]
+        length = len(labels)
+        labels_arr = np.reshape(np.array(labels, dtype='float32'), (length, 1))
+        label_con[i] = labels_arr
+    label_con[2] /= EI
+    label_con[3] /= EI
+    return label_con
 
 def uniform_load(x, magnitude):
-    return np.ones((x.shape[0], x.shape[1])) * magnitude
+    loads = []
+    for segment in x:
+        loads.append(np.ones((segment.shape[0], segment.shape[1])) * magnitude)
+    return loads
 
 def uniform_varying_load(x, bound, magnitude, zero_end):
     left_zero_end_load = magnitude / bound * x
@@ -127,6 +92,25 @@ def uniform_varying_load(x, bound, magnitude, zero_end):
         return left_zero_end_load
     else:
         return magnitude - left_zero_end_load
+
+def coord_partition(x, bc_dict):
+    l = np.array([key for key in bc_dict.keys() if bc_dict[key][-1] == -1])
+    r = np.array([key for key in bc_dict.keys() if bc_dict[key][-1] == 1])
+    partition = (l + r) / 2
+    if partition:
+        start_index = 0
+        x_part = []
+        for part_pt in partition:
+            end_index = np.argmin(np.abs(x - part_pt))
+            if x[end_index] >= part_pt:
+                end_index -= 1
+            x_part.append(x[start_index:end_index, :])
+            start_index = end_index
+        x_part.append(x[end_index:, :])
+    else:
+        x_part = [x]
+    
+    return x_part
 
 def custom_load(x, custom_fun):
 
